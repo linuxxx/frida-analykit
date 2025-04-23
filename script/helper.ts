@@ -2,6 +2,7 @@ import { Libc } from './lib/libc.js'
 import { FixedQueue } from './utils/queue.js'
 import { RPCMsgType, saveFileSource } from './message.js'
 import { Config, LogLevel, setGlobalProperties } from './config.js'
+import { TextEncoder } from './utils/text_endec.js'
 
 
 export class NativePointerObject {
@@ -127,13 +128,19 @@ export class FileHelper extends NativePointerObject {
 }
 
 
-type MemoryProtect = { 
+export type MemoryProtect = { 
     originProts: string
     newProts: string
     range: RangeDetails | null
     protectResult?: boolean 
     recoverResult?: boolean 
+    readable: boolean
 }
+
+export type MemoryPage = {
+    base: NativePointer
+    size: number
+} & MemoryProtect
 
 
 export class BatchSender {
@@ -196,6 +203,72 @@ export class BatchSender {
         this.clear()
     }
 
+}
+
+
+let PROGRESS_INC: number = 0
+
+export class ProgressNotify {
+    private readonly ID: number
+    readonly tag: string
+    private step: number = 0
+    private startTime: Date
+
+    constructor(tag: string) {
+        PROGRESS_INC++
+        this.ID = PROGRESS_INC
+        this.tag = tag
+        this.startTime = new Date()
+    }
+
+    notify(extra: { [key: string]: any } = {}, err?: Error){
+        sendProgressMsg(this.tag, this.ID, this.step, extra, err)
+        this.step ++
+    }
+
+    log(name: any, extra: any, lines?: string[]) {
+        const now = new Date()
+        console.error(`[+] | ${this.tag} | <${name}> - ${extra} (${now.getTime() - this.startTime.getTime()} ms)`)
+        if(lines?.length) {
+            console.error('[>] ' + lines.map(v => `${v}`).join('\n'))
+        }
+        this.startTime = now
+    }
+
+}
+
+
+function sendProgressMsg(tag: string, id: number, step: number, extra: { [key: string]: any } = {}, err?: Error){
+    Helper.$send({
+        type: RPCMsgType.PROGRESSING,
+        data: {
+            tag: tag,
+            id: id,
+            step: step,
+            time: new Date().getTime(),
+            extra: extra,
+            error: err ? {
+                message: err?.message,
+                stack: err?.stack
+            }: null,
+        }
+    })
+}
+
+
+
+function getScanPatternSize(pattern: string): number {
+    if (pattern.startsWith('/') && pattern.endsWith('/')) {
+        throw new Error("Regular expression patterns are not allowed")
+    }
+
+    const bytesPart = pattern.split(':', 1)[0].trim()
+    if (bytesPart === '') {
+        return 0
+    }
+
+    const bytes = bytesPart.split(/\s+/)
+    return bytes.length
 }
 
 
@@ -364,38 +437,34 @@ class Helper {
         return File.readAllText(path)
     }
 
-    static dumpProcMaps(filepath: string, pid: number | string = 'self', log = console.error) {
-        log(`===== 保存/proc/${pid}/maps内存映射表 ======`)
+    static dumpProcMaps(tag: string, pid: number | string = 'self') {
+        const prog = new ProgressNotify('Helper.dumpProcMaps')
         const sm = this.readProcMaps(pid)
-        log(`> [filesize] ${sm.length}`)
-        this.saveFile(filepath, sm, 'w', saveFileSource.procMaps)
-        log(`<`)
+        this.saveFile(tag, sm, 'w', saveFileSource.procMaps)
+        prog.log(pid, `[${sm.length}]${tag}`)
     }
 
-    static dumpTextFile(filepath: string, srcPath: string, log = console.log) {
-        log(`===== 拷贝保存${srcPath}文件 ======`)
+    static dumpTextFile(tag: string, srcPath: string) {
+        const prog = new ProgressNotify('Helper.dumpTextFile')
         const sm = File.readAllText(srcPath)
-        log(`> [filesize] ${sm.length}`)
-        this.saveFile(filepath, sm, 'w', saveFileSource.textFile)
-        log(`<`)
+        this.saveFile(tag, sm, 'w', saveFileSource.textFile)
+        prog.log(srcPath, `[${sm.length}](${tag})`)
     }
 
-    static backtrace({ context = undefined, log = console.error, addrHandler = DebugSymbol.fromAddress, backtracer = Backtracer.ACCURATE }: {
+    static backtrace({ context = undefined, addrHandler = DebugSymbol.fromAddress, backtracer = Backtracer.ACCURATE }: {
         context?: undefined | CpuContext,
-        log?: (...args: any[]) => any,
         addrHandler?: (addr: any) => any,
         backtracer?: Backtracer,
     } = {}) {
-        log('========== 调用栈 ===========')
+        const prog = new ProgressNotify('Helper.backtrace')
         const stacks = Thread.backtrace(context, backtracer).map(addr => {
-            return `> ${addrHandler(addr)}`
+            return `${addrHandler(addr)}`
         })
-        log(stacks.join('\n'))
-        log(`<`)
+        prog.log(Process.getCurrentThreadId(), '', stacks)
     }
 
 
-    static saveFile(filepath: string, bs: string | ArrayBuffer | null, mode: string, source: string) {
+    static saveFile(tag: string, bs: string | ArrayBuffer | null, mode: string, source: string) {
         if (bs === null || bs === undefined) {
             return false
         }
@@ -403,12 +472,8 @@ class Helper {
         if (Config.OnRPC) {
             let buff: ArrayBuffer
             if(bs instanceof String) {
-                // ascii
-                buff = new ArrayBuffer(bs.length)
-                const view = new Uint8Array(buff)
-                for (let i = 0; i < bs.length; i++) {
-                    view[i] = bs.charCodeAt(i) & 0x7F
-                }
+                const enc = new TextEncoder()
+                const view = enc.encode(bs as string)
                 buff = view.buffer as ArrayBuffer
             }else{
                 buff = bs as ArrayBuffer
@@ -417,12 +482,12 @@ class Helper {
                 type: RPCMsgType.SAVE_FILE,
                 data: {
                     source,
-                    filepath,
+                    filepath: Helper.joinPath(this.outputDir, tag),
                     mode,
                 }
             }, buff)
         }else{
-            const savedFile = new File(filepath, mode)
+            const savedFile = new File(tag, mode)
             savedFile.write(bs)
             savedFile.close()
         }
@@ -436,23 +501,27 @@ class Helper {
         return this._android_api_level
     }
 
-    static memoryProtectReadableDo(address: NativePointer, size: number, doFunc: (tryProtect: () => MemoryProtect[], tryRecover: ()=>MemoryProtect[])=>void ) {
+    static memoryReadDo(address: NativePointer, size: number, doFunc: (makeReadable: () => MemoryProtect[], makeRecovery: ()=>MemoryProtect[])=>void ) {
         const page_infos: MemoryProtect[] = []
-        const tryProtect = () => {
+        const makeReadable = () => {
             let cur = address
             const end = address.add(size)
             while (cur < end) {
                 const range = Process.findRangeByAddress(cur)
                 let originProts = ''
                 let newProts = ''
+                let readable = false
                 if(range !== null) {
                     cur = range.base.add(range.size)
                     originProts = range.protection
                     if(range.protection[0] !== 'r') {
                         newProts = 'r' + originProts.slice(1)
+                    }else{
+                        readable = true
                     }
                 }
                 page_infos.push({
+                    readable,
                     originProts,
                     newProts,
                     range,
@@ -461,12 +530,15 @@ class Helper {
             for(let v of page_infos) {
                 if(v.range && v.newProts !== '') {
                     v.protectResult = Memory.protect(v.range.base, v.range.size, v.newProts)
+                    if(v.protectResult) {
+                        v.readable = true
+                    }
                 }
             }
             return page_infos
         }
 
-        const tryRecover = () => {
+        const makeRecovery = () => {
             for (let v of page_infos) {
                 if (v.range && v.newProts !== '' && v.protectResult) {
                     v.recoverResult = Memory.protect(v.range.base, v.range.size, v.originProts)
@@ -475,7 +547,49 @@ class Helper {
             return page_infos
         }
 
-        doFunc(tryProtect, tryRecover)
+        doFunc(makeReadable, makeRecovery)
+    }
+
+
+    static memoryReadPageDo(base: NativePointer, size: number, doFunc: (page: MemoryPage)=>boolean){
+        const page_infos: MemoryPage[] = []
+        let cur = base
+        const end = base.add(size)
+        let isAbort = false
+
+        while (!isAbort && cur < end) {
+            const range = Process.findRangeByAddress(cur)
+            let mp: MemoryPage = {
+                base: cur.and(ptr(Process.pageSize-1).not()),
+                size: Process.pageSize,
+                protectResult: false,
+                originProts: '',
+                newProts: '',
+                readable: false,
+                range,
+            }
+
+            if (range !== null) {
+                mp.originProts = range.protection
+                if (range.protection[0] !== 'r') {
+                    mp.newProts = 'r' + mp.originProts.slice(1)
+                    mp.protectResult = Memory.protect(mp.base, mp.size, mp.newProts)
+                    if(mp.protectResult) {
+                        mp.readable = true
+                    }
+                }else{
+                    mp.readable = true
+                }
+                isAbort = doFunc(mp)
+                if(mp.protectResult) {
+                    mp.recoverResult = Memory.protect(mp.base, mp.size, mp.originProts)
+                }
+            }
+            page_infos.push(mp)
+            cur = mp.base.add(mp.size)
+        }
+
+        return page_infos
     }
 
     static newBatchSender(source: string): BatchSender {
@@ -494,6 +608,50 @@ class Helper {
 
     static $send(message: any, data?: ArrayBuffer | number[] | null): void {
         send(message, data)
+    }
+
+
+    static scanMemory(
+        scanRange: { base: NativePointer, size: number },
+        pattern: string,
+        { limit = Process.pageSize, maxMatchNum = -1, onMatch }: {
+            limit?: number,
+            maxMatchNum?: number,
+            onMatch?: (match: MemoryScanMatch) => boolean,
+        },
+    ) {
+        const patternSize = getScanPatternSize(pattern)
+        const { base, size } = scanRange
+        const end = base.add(size)
+        let cursor = base
+
+        const scanResults: MemoryScanMatch[] = []
+        this.memoryReadDo(base, size, (makeReadable, makeRecovery) => {
+            makeReadable()
+            while (cursor < end) {
+                const nextCur = cursor.add(Math.min(Number(end.sub(cursor)), limit))
+                const cur = Number(cursor.sub(base)) > patternSize ? cursor.sub(patternSize) : cursor
+                let results: MemoryScanMatch[]
+                try {
+                    results = Memory.scanSync(cur, Number(nextCur.sub(cur)), pattern)
+                    if (onMatch) {
+                        results = results.filter(v => onMatch(v))
+                    }
+                    scanResults.push(...results)
+                } catch (e) {
+                    // TODO: Error: access violation accessing 0xxxxxx
+                    console.error(`[scanMemory] e[${e}]`)
+                } finally {
+                    if (maxMatchNum > 0 && scanResults.length >= maxMatchNum) {
+                        break
+                    }
+                    cursor = nextCur
+                }
+            }
+            makeRecovery()
+        })
+
+        return scanResults
     }
 
 }

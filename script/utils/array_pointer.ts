@@ -95,4 +95,8 @@ export class ArrayPointer extends Number {
     readPointer(): NativePointer {
         return ptr(Number(this.readU64())).readPointer()
     }
+
+    toString(): string {
+        return this.readU64().toString(16)
+    }
 }

@@ -29,6 +29,10 @@ export type Phdr = {
 }
 
 export type Shdr = {
+    name: string | null,
+    base: NativePointer
+    size: number
+
     sh_name: number,
     sh_type: number,
     sh_addr: number,

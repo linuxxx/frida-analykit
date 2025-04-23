@@ -4,6 +4,16 @@ import os
 import functools 
 import weakref
 import json
+from threading import Lock
+
+
+# patch
+_default_jsonenc = json.JSONEncoder.default
+def _patched(self, o):
+    if isinstance(o, JsHandle):
+        return str(o)
+    return _default_jsonenc(self, o)
+json.JSONEncoder.default = _patched
 
 
 if TYPE_CHECKING:
@@ -32,6 +42,8 @@ class JsHandle:
     __inst_id: Union[str, bool, None] = None
     __value: Any = Unset('any')
 
+    __lock: Lock = Lock()
+
     __INTERNAL_PROP__: Final[FrozenSet[str]] = frozenset(['_JsHandle' + v for v in [
         '__path',
         '__parent',
@@ -41,6 +53,7 @@ class JsHandle:
         '__scope_id',
         '__inst_id',
         '__value',
+        '__lock',
     ]])
 
     __LATER_PROP__: Final[FrozenSet[str]] = frozenset([
@@ -144,6 +157,7 @@ class JsHandle:
             props[name] = val
         if type(val) is Unset:
             if REPL:
+                self.__lock.acquire()
                 unset_childs: Dict[str, JsHandle] = {}
                 unset_props: Dict[str, Dict] = {}
                 order_inst_ids = []
@@ -158,6 +172,8 @@ class JsHandle:
                     unset_props[key] = later_update_props
                     order_inst_ids.append(key)
 
+                self.__lock.release()
+                
                 batch_result = self.__script.exports_sync.enumerate_obj_props(order_inst_ids, self.__scope_id)
                 for i, p in enumerate(batch_result.message.data.props):
                     key = order_inst_ids[i]
@@ -165,7 +181,7 @@ class JsHandle:
                         k: Unset(v)
                         for k, v in p.items()
                     })
-                val = unset_childs[name]
+                val = props[name]
             else:
                 val = JsHandle(name, self, script=self.__script, typ=val.name, scope_id=self.__scope_id, inst_id=None)
                 props[name] = val

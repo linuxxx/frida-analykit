@@ -16,6 +16,7 @@ class RPCMsgType(Enum):
     INIT_CONFIG: str = 'INIT_CONFIG'
     SAVE_FILE: str = 'SAVE_FILE'
     SSL_SECRET: str = 'SSL_SECRET'
+    PROGRESSING: str = 'PROGRESSING'
 
     @classmethod
     def __get_pydantic_core_schema__(
@@ -89,6 +90,20 @@ class RPCMsg_SSL_SECRET(BaseModel):
     secret: str
 
 
+class RPC_ErrorMsg(BaseModel):
+    message: Optional[str]
+    stack: Optional[str]
+
+
+class RPCMsg_PROGRESSING(BaseModel):
+    tag: str
+    id: int
+    step: int
+    time: int
+    extra: Dict[str, Any]
+    error: Optional[RPC_ErrorMsg] = None
+
+
 
 RPCMsgData = Union[
     RPCMsg_ERROR,
@@ -100,6 +115,7 @@ RPCMsgData = Union[
     RPCMsg_BATCH,
     RPCMsg_SAVE_FILE,
     RPCMsg_SSL_SECRET,
+    RPCMsg_PROGRESSING,
 ]
 
 
