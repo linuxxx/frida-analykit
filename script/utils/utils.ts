@@ -46,7 +46,7 @@ function binaryPointerReader(offset: number): BianaryBaseReader<NativePointer> {
 
 function binaryPointerOffset(offset: number): BianaryBaseReader<NativePointer> {
     return function (base: NativePointer | ArrayPointer): NativePointer {
-        return ptr(Number(base.add(offset)))
+        return ptr(base.add(offset).toString())
     }
 }
 
@@ -93,4 +93,19 @@ export {
 
 export function wrapArgTypes(typ: NativeFunctionArgumentType, length: number): NativeFunctionArgumentType[] {
     return Array.from({ length: length }, () => typ)
+}
+
+
+export function arrayBuffer2Hex(
+    buffer: ArrayBuffer,
+    options: { uppercase?: boolean } = {}
+): string {
+    const { uppercase = false } = options
+    const bytes = new Uint8Array(buffer)
+    return Array.from(bytes)
+        .map(b => {
+            const hex = b.toString(16).padStart(2, '0')
+            return uppercase ? hex.toUpperCase() : hex
+        })
+        .join(' ')
 }

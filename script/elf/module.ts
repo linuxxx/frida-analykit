@@ -7,6 +7,8 @@ import {
 } from './struct.js'
 import { help , downAlign, upAlign, page_end, page_start } from '../helper.js'
 import { ArrayPointer } from '../utils/array_pointer.js'
+import { setGlobalProperties } from '../config.js'
+import { saveFileSource } from '../message.js'
 
 
 interface ElfModuleX extends BaseModule {}
@@ -22,7 +24,7 @@ declare global {
 }
 
 
-interface ElfModuleFixer {
+export interface ElfModuleFixer {
     fixShdrs(modx: ElfModuleX): boolean
 }
 
@@ -89,6 +91,10 @@ class ElfModuleX {
                 return target.module[prop as keyof BaseModule]
             }
         })
+    }
+
+    static loadFromModule(mod: Module) {
+        return new ElfModuleX(mod)
     }
 
     readEhdr() {
@@ -279,17 +285,30 @@ class ElfModuleX {
         const tables: Shdr[] = []
         for (let i = 0; i < this.ehdr.e_shnum; i++) {
             const cellBase = base.add(i * structOf.SIZE)
+            const sh_addr = structOf.Sh_Addr(cellBase)
+            const sh_size = structOf.Sh_Size(cellBase)
             tables.push({
+                name: null,
+                base: this.module.base.add(sh_addr),
+                size: sh_size,
+
                 sh_name: structOf.Sh_Name(cellBase),
                 sh_type: structOf.Sh_Type(cellBase),
-                sh_addr: structOf.Sh_Addr(cellBase),
+                sh_addr: sh_addr,
                 sh_offset: structOf.Sh_Offset(cellBase),
-                sh_size: structOf.Sh_Size(cellBase),
+                sh_size: sh_size,
                 sh_link: structOf.Sh_Link(cellBase),
                 sh_info: structOf.Sh_Info(cellBase),
                 sh_addralign: structOf.Sh_Addralign(cellBase),
                 sh_entsize: structOf.Sh_Entsize(cellBase),
             })
+        }
+
+        // fill name
+        const shstrndxShdr = tables[this.ehdr.e_shstrndx]
+        const shstrBase = this.base.add(shstrndxShdr.sh_offset)
+        for(let v of tables) {
+            v.name = shstrBase.add(v.sh_name).readCString()
         }
         return tables
     }
@@ -462,6 +481,25 @@ class ElfModuleX {
         return addr >= this.base && addr < this.base.add(this.size)
     }
 
+    getSegment(seg: string): Shdr | null {
+        if (this.shdrs) {
+            return this.shdrs.find(shdr => shdr.name === seg) || null
+        }
+        return null
+    }
+
+    dump(tag: string) {
+        let buff: ArrayBuffer | null = null
+        help.memoryReadDo(this.base, this.size, (makeReadable, makeRecovery) => {
+            makeReadable()
+            buff = this.base.readByteArray(this.size)
+            makeRecovery()
+        })
+        if (buff) {
+            help.saveFile(tag, buff, 'wb', saveFileSource.elfModule)
+        }
+    }
+
 }
 
 
@@ -574,7 +612,13 @@ export class ElfFileFixer implements ElfModuleFixer {
         const tables: Shdr[] = []
         for (let i = 0; i < ehdr.e_shnum; i++) {
             const cellBase = base.add(i * structOf.SIZE)
+            const sh_addr = structOf.Sh_Addr(cellBase)
+            const sh_size = structOf.Sh_Size(cellBase)
             tables.push({
+                name: null,
+                base: this.modx!.base.add(sh_addr),
+                size: sh_size,
+                
                 sh_name: structOf.Sh_Name(cellBase),
                 sh_type: structOf.Sh_Type(cellBase),
                 sh_addr: structOf.Sh_Addr(cellBase),
@@ -586,6 +630,12 @@ export class ElfFileFixer implements ElfModuleFixer {
                 sh_entsize: structOf.Sh_Entsize(cellBase),
             })
         }
+        this.shdrs = tables
+        // fill name
+        for(let v of tables) {
+            v.name = this.getShstrtabString(v.sh_name)
+        }
+
         return tables
     }
 
@@ -680,17 +730,21 @@ export class ElfFileFixer implements ElfModuleFixer {
 
     fixShdrs(modx: ElfModuleX): boolean {
         this.modx = modx
-        const shdrs = this.readShdrs()
-
-        if(shdrs){
-            modx.shdrs = shdrs
-            this.strtab = this.readStrtab()
-            modx.strtab = this.strtab || null
-            
-            const symtab = this.readSymtab()
-            modx.symtab = symtab
-            return true
+        try {
+            const shdrs = this.readShdrs()
+            if(shdrs){
+                this.strtab = this.readStrtab()  
+                const symtab = this.readSymtab()
+                
+                modx.shdrs = shdrs
+                modx.strtab = this.strtab || null
+                modx.symtab = symtab
+                return true
+            }
+        }catch(e) {
+            console.error(`[ElfFileFixer]fixShdrs name[${modx.name}] e[${e}]`)
         }
+
         return false
     }
 

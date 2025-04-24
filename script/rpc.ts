@@ -1,10 +1,10 @@
-import { ElfModuleX } from "./elf/module.js"
 import { JNIEnv } from "./jni/env.js"
 import { RPCMsgType } from "./message.js"
 import { SSLTools } from "./net/ssl.js"
 import { help } from "./helper.js"
 import { Libssl } from "./lib/libssl.js"
 import { proc } from "./process.js"
+import { ElfTools } from "./elf/tools.js"
 
 const _BASE_CONTEXT = {
     Java,
@@ -32,7 +32,7 @@ const _BASE_CONTEXT = {
     proc,
     JNIEnv,
     SSLTools,
-    ElfModuleX,
+    ElfTools,
     Libssl,
 
     Object, Array, String, Number, Boolean, Symbol, BigInt, Function,
@@ -169,14 +169,28 @@ function enumerateObjProps(instIdOrObjChain: string | Array<string>, scopeId: st
 }
 
 
+function iterScopeGet(v: any, scopeId: string, bind: boolean = false): any {
+    switch(typeof(v)) {
+        case 'string':
+            if (v.startsWith(SCOPE_GETTER_PREFIX)) {
+                return getObj(v, scopeId, bind)
+            }
+            break
+        case 'object':
+            const nv: { [key: string]: any } = {}
+            for(const [kk, vv] of Object.entries(v)) {
+                nv[kk] = iterScopeGet(vv, scopeId, bind)
+            }
+            return nv
+    }
+    return v
+}
+
 
 function scopeCall(instIdOrObjChain: string, args: Array<any>, scopeId: string){
     const obj = getObj(instIdOrObjChain, scopeId, true)
     const nargs = args.map(v => {
-        if (typeof (v) === 'string' && v.startsWith(SCOPE_GETTER_PREFIX)) {
-            return getObj(v, scopeId, false)
-        }
-        return v
+        return iterScopeGet(v, scopeId, false)
     })
     const result = obj(...nargs)
     const id = gen_id()

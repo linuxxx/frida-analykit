@@ -6,7 +6,6 @@ export class StdVector extends NativePointerObject {
     private readonly _start: NativePointer
     private readonly _finish: NativePointer
     private readonly _end_of_storage: NativePointer
-    private _deleted: boolean = false
 
     constructor(handle: NativePointer = NULL){
         let shouldDelete = handle.isNull()
@@ -20,8 +19,9 @@ export class StdVector extends NativePointerObject {
         this._end_of_storage = this.$handle.add(Process.pointerSize * 2)
 
         if (shouldDelete) {
+            const weakRef = ptr(handle.toString())
             Script.bindWeak(this.$handle, () =>{
-                this.$delete()
+                Java.api.$delete(weakRef)
             })
         }
     }
@@ -90,14 +90,6 @@ export class StdVector extends NativePointerObject {
         }
         return list
     }
-
-    $delete(){
-        if (this._deleted) {
-            return 
-        }
-        Java.api.$delete(this.start)
-    }
-
 }
 
 

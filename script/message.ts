@@ -11,6 +11,7 @@ export const enum RPCMsgType {
     INIT_CONFIG = 'INIT_CONFIG',
     SAVE_FILE = 'SAVE_FILE',
     SSL_SECRET = 'SSL_SECRET',
+    PROGRESSING = 'PROGRESSING',
 }
 
 
@@ -21,4 +22,5 @@ export const enum batchSendSource {
 export const enum saveFileSource {
     procMaps = 'procMaps',
     textFile = 'textFile',
+    elfModule = 'elfModule',
 }
