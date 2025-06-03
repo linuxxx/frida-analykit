@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Final
 import pexpect
+from pexpect import popen_spawn
 import shutil
 import click
 import sys
@@ -46,9 +47,10 @@ def dev(work_dir: str = './', kit_dir: str = ANALYKIT_RELPATH, npm_registry: str
             shutil.copy(src_path, target)
 
     os.chdir(work_dir)
-    cmd = f'npm install {"--registry=" + npm_registry if npm_registry else ""}'
+    cmd_prefix = 'cmd.exe /c ' if sys.platform == 'win32' else ''
+    cmd = f'{cmd_prefix}npm install {"--registry=" + npm_registry if npm_registry else ""}'
     print(cmd)
-    npmsh = pexpect.spawn(cmd, logfile=sys.stdout.buffer)
+    npmsh = popen_spawn.PopenSpawn(cmd, logfile=sys.stdout.buffer)
     npmsh.expect([pexpect.EOF, pexpect.TIMEOUT], timeout=60)
 
 
